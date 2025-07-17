@@ -1,154 +1,194 @@
-#!/usr/bin/env python3
-import os
-import platform
-import sys
-import copy
+from setuptools import setup, Extension
+from setuptools.command.build_ext import build_ext
+from Cython.Distutils import build_ext
+import numpy, os, platform, sys
 from os.path import join as pjoin
 
-import numpy
-from setuptools import setup, Extension
-from Cython.Build import cythonize
 
+# Obtain the numpy include directory.  This logic works across numpy versions.
+try:
+    numpy_include = numpy.get_include()
+except AttributeError:
+    numpy_include = numpy.get_numpy_include()
 
-def check_for_flag(env_var, truemsg=None, falsemsg=None):
-    enabled = os.environ.get(env_var, "").lower() == "on"
+def check_for_flag(flag_str, truemsg=False, falsemsg=False):
+    enabled = os.environ.get(flag_str, "").lower() == "on"
     if enabled and truemsg:
         print(truemsg)
     elif not enabled and falsemsg:
         print(falsemsg)
-        print(f"   $ export {env_var}=ON && python setup.py install")
+        print("   $ sudo {}=ON python setup.py install".format(flag_str))
     return enabled
 
 
-use_cuda = check_for_flag(
-    "WITH_CUDA",
-    truemsg="Compiling with CUDA support",
-    falsemsg="Compiling without CUDA support. To enable CUDA use:"
-)
-trace = check_for_flag(
-    "TRACE",
-    truemsg="Compiling with trace enabled for Bresenham's Line",
-    falsemsg="Compiling without trace enabled for Bresenham's Line"
-)
+use_cuda = check_for_flag("WITH_CUDA", \
+	"Compiling with CUDA support", \
+	"Compiling without CUDA support. To enable CUDA use:")
+trace    = check_for_flag("TRACE", \
+	"Compiling with trace enabled for Bresenham's Line", \
+	"Compiling without trace enabled for Bresenham's Line")
 
-# Mac-specific compile flags
+this_dir = os.path.abspath(os.path.dirname(__file__))
+parent_dir = os.path.abspath(os.path.join(this_dir, ".."))
+vendor_dir = os.path.join(parent_dir, "vendor", "lodepng")
+includes_dir = os.path.join(parent_dir, "includes")
+
+include_dirs = [numpy_include, includes_dir, vendor_dir]
+print()
+print("--------------")
+print()
+
+# support for compiling in clang
 if platform.system().lower() == "darwin":
     os.environ["MACOSX_DEPLOYMENT_TARGET"] = platform.mac_ver()[0]
     os.environ["CC"] = "c++"
 
 def find_in_path(name, path):
+    "Find a file in a search path"
+    #adapted fom http://code.activestate.com/recipes/52224-find-a-file-given-a-search-path/
     for dir in path.split(os.pathsep):
         binpath = pjoin(dir, name)
         if os.path.exists(binpath):
             return os.path.abspath(binpath)
     return None
 
+# export CUDAHOME=/usr/local/cuda
 def locate_cuda():
-    # Check common install locations or CUDAHOME
+    """Locate the CUDA environment on the system
+
+    Returns a dict with keys 'home', 'nvcc', 'include', and 'lib64'
+    and values giving the absolute path to each directory.
+
+    Starts by looking for the CUDAHOME env variable. If not found, everything
+    is based on finding 'nvcc' in the PATH.
+    """
+    # print os.environ
+    # first check if the CUDAHOME env variable is in use
     if os.path.isdir("/usr/local/cuda-7.5"):
         home = "/usr/local/cuda-7.5"
+        nvcc = pjoin(home, 'bin', 'nvcc')
     elif os.path.isdir("/usr/local/cuda"):
         home = "/usr/local/cuda"
-    elif "CUDAHOME" in os.environ:
-        home = os.environ["CUDAHOME"]
+        nvcc = pjoin(home, 'bin', 'nvcc')
+    elif 'CUDAHOME' in os.environ:
+        home = os.environ['CUDAHOME']
+        nvcc = pjoin(home, 'bin', 'nvcc')
     else:
-        nvcc = find_in_path("nvcc", os.environ.get("PATH", ""))
+        # otherwise, search the PATH for NVCC
+        nvcc = find_in_path('nvcc', os.environ['PATH'])
         if nvcc is None:
-            raise EnvironmentError(
-                "The nvcc binary could not be located in your $PATH. "
-                "Either add it to your path, or set $CUDAHOME"
-            )
+            raise EnvironmentError('The nvcc binary could not be '
+                'located in your $PATH. Either add it to your path, or set $CUDAHOME')
         home = os.path.dirname(os.path.dirname(nvcc))
 
-    nvcc = pjoin(home, "bin", "nvcc")
-    cudaconfig = {
-        "home": home,
-        "nvcc": nvcc,
-        "include": pjoin(home, "include"),
-        "lib64": pjoin(home, "lib64"),
-    }
-    for k, v in cudaconfig.items():
+    cudaconfig = {'home':home, 'nvcc':nvcc,
+                  'include': pjoin(home, 'include'),
+                  'lib64': pjoin(home, 'lib64')}
+    for k, v in cudaconfig.iteritems():
         if not os.path.exists(v):
-            raise EnvironmentError(f"The CUDA {k} path could not be located in {v}")
+            raise EnvironmentError('The CUDA %s path could not be located in %s' % (k, v))
+
     return cudaconfig
 
-# Compile flags
-compiler_flags = ["-w", "-std=c++11", "-march=native", "-ffast-math", "-fno-math-errno", "-O3"]
-nvcc_flags     = ["-arch=sm_20", "--ptxas-options=-v", "-c", "--compiler-options", "'-fPIC'", "-w", "-std=c++11"]
-include_dirs   = ["../", numpy.get_include()]
-depends        = ["../includes/*.h"]
-sources        = ["RangeLibc.pyx", "../vendor/lodepng/lodepng.cpp"]
 
-CHUNK_SIZE  = "262144"
+##################### Configuration ############################
+
+
+# compiler_flags = ["-w","-std=c++11", "-march=native", "-ffast-math", "-fno-math-errno"]
+compiler_flags = ["-w","-std=c++11", "-march=native", "-ffast-math", "-fno-math-errno", "-O3"]
+nvcc_flags = ['-arch=sm_20', '--ptxas-options=-v', '-c', '--compiler-options', "'-fPIC'", "-w","-std=c++11"]
+include_dirs = [parent_dir, vendor_dir, includes_dir, numpy_include]
+depends = [os.path.join(includes_dir, "*.h")]
+sources = [
+    os.path.join(this_dir, "RangeLibc.pyx"),
+    os.path.join(vendor_dir, "lodepng.cpp")
+]
+CHUNK_SIZE = "262144"
 NUM_THREADS = "256"
 
 if use_cuda:
-    compiler_flags += [f"-DUSE_CUDA=1", f"-DCHUNK_SIZE={CHUNK_SIZE}", f"-DNUM_THREADS={NUM_THREADS}"]
-    nvcc_flags     += [f"-DUSE_CUDA=1", f"-DCHUNK_SIZE={CHUNK_SIZE}", f"-DNUM_THREADS={NUM_THREADS}"]
+    compiler_flags.append("-DUSE_CUDA=1");        nvcc_flags.append("-DUSE_CUDA=1")
+    compiler_flags.append("-DCHUNK_SIZE="+CHUNK_SIZE); nvcc_flags.append("-DCHUNK_SIZE="+CHUNK_SIZE)
+    compiler_flags.append("-DNUM_THREADS="+NUM_THREADS);   nvcc_flags.append("-DNUM_THREADS="+NUM_THREADS)
 
     CUDA = locate_cuda()
-    include_dirs.append(CUDA["include"])
-    sources.append("../includes/kernels.cu")
-
+    include_dirs.append(CUDA['include'])
+    sources.append(os.path.join(includes_dir, "kernels.cu"))
 if trace:
-    compiler_flags.append("-D_MAKE_TRACE_MAP=1")
+	compiler_flags.append("-D_MAKE_TRACE_MAP=1")
 
 
-# Customize the build_ext to handle .cu with nvcc
-from setuptools.command.build_ext import build_ext as _build_ext
+##################################################################
 
-class custom_build_ext(_build_ext):
+def customize_compiler_for_nvcc(self):
+    """inject deep into distutils to customize how the dispatch
+    to gcc/nvcc works.
+
+    If you subclass UnixCCompiler, it's not trivial to get your subclass
+    injected in, and still have the right customizations (i.e.
+    distutils.sysconfig.customize_compiler) run on it. So instead of going
+    the OO route, I have this. Note, it's kindof like a wierd functional
+    subclassing going on."""
+
+    # tell the compiler it can processes .cu
+    self.src_extensions.append('.cu')
+
+    # save references to the default compiler_so and _comple methods
+    default_compiler_so = self.compiler_so
+    super = self._compile
+
+    # now redefine the _compile method. This gets executed for each
+    # object but distutils doesn't have the ability to change compilers
+    # based on source extension: we add it.
+    def _compile(obj, src, ext, cc_args, extra_postargs, pp_opts):
+        if os.path.splitext(src)[1] == '.cu':
+            # use the cuda for .cu files
+            self.set_executable('compiler_so', CUDA['nvcc'])
+            # use only a subset of the extra_postargs, which are 1-1 translated
+            # from the extra_compile_args in the Extension class
+            postargs = extra_postargs['nvcc']
+        else:
+            postargs = extra_postargs['gcc']
+        # postargs = extra_postargs#['gcc']
+
+        super(obj, src, ext, cc_args, postargs, pp_opts)
+        # reset the default compiler_so, which we might have changed for cuda
+        self.compiler_so = default_compiler_so
+
+    # inject our redefined _compile method into the class
+    self._compile = _compile
+
+# run the customize_compiler
+class custom_build_ext(build_ext):
     def build_extensions(self):
-        self.compiler.src_extensions.append(".cu")
-        default_compiler_so = self.compiler.compiler_so
-        super_compile = self.compiler._compile
+        customize_compiler_for_nvcc(self.compiler)
+        build_ext.build_extensions(self)
 
-        def _compile(obj, src, ext, cc_args, extra_postargs, pp_opts):
-            if os.path.splitext(src)[1] == ".cu":
-                self.compiler.set_executable("compiler_so", CUDA["nvcc"])
-                postargs = extra_postargs.get("nvcc", [])
-            else:
-                postargs = extra_postargs.get("gcc", [])
-            super_compile(obj, src, ext, cc_args, postargs, pp_opts)
-            self.compiler.compiler_so = default_compiler_so
-
-        self.compiler._compile = _compile
-        super().build_extensions()
-
-# Extension definition
 if use_cuda:
-    ext_modules = [
-        Extension(
-            "range_libc",
-            sources,
-            include_dirs=include_dirs,
-            library_dirs=[CUDA["lib64"]],
-            libraries=["cudart"],
-            runtime_library_dirs=[CUDA["lib64"]],
-            extra_compile_args={"gcc": compiler_flags, "nvcc": nvcc_flags},
-            extra_link_args=["-std=c++11"],
-            depends=depends,
-            language="c++",
-        )
-    ]
+	ext = Extension("range_libc", sources, 
+					extra_compile_args = {'gcc': compiler_flags, 'nvcc': nvcc_flags},
+					extra_link_args = ["-std=c++11"],
+					include_dirs = include_dirs,
+					library_dirs=[CUDA['lib64']],
+					libraries=['cudart'],
+					runtime_library_dirs=[CUDA['lib64']],
+					depends=depends,
+					language="c++",)
+	setup(name='range_libc',
+		author='Corey Walsh',
+		version='0.1',
+		ext_modules = [ext],
+		# inject our custom trigger
+		cmdclass={'build_ext': custom_build_ext})
 else:
-    ext_modules = [
-        Extension(
-            "range_libc",
-            sources,
-            include_dirs=include_dirs,
-            # non‐CUDA 환경에서도 dict 형태로 전달
-            extra_compile_args={"gcc": compiler_flags, "nvcc": []},
-            extra_link_args=["-std=c++11"],
-            depends=depends,
-            language="c++",
-        )
-    ]
-
-setup(
-    name="range_libc",
-    version="0.1",
-    author="Corey Walsh",
-    ext_modules=cythonize(ext_modules),
-    cmdclass={"build_ext": custom_build_ext},
-)
+	setup(ext_modules=[
+			Extension("range_libc", sources, 
+				extra_compile_args = compiler_flags,
+				extra_link_args = ["-std=c++11"],
+				include_dirs = include_dirs,
+				depends=["../includes/*.h"],
+				language="c++",)],
+		name='range_libc',
+		author='Corey Walsh',
+		version='0.1',
+	    cmdclass = {'build_ext': build_ext})

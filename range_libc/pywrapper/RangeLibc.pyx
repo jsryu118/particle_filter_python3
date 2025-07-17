@@ -10,7 +10,7 @@ if USE_ROS_MAP:
     from nav_msgs.msg import OccupancyGrid
     import tf.transformations
 
-cdef extern from "includes/RangeLib.h":
+cdef extern from "RangeLib.h":
     # define flags
     cdef bool _USE_CACHED_TRIG "_USE_CACHED_TRIG"
     cdef bool _USE_ALTERNATE_MOD "_USE_ALTERNATE_MOD"
@@ -22,7 +22,7 @@ cdef extern from "includes/RangeLib.h":
     cdef bool _MAKE_TRACE_MAP "_MAKE_TRACE_MAP"
     cdef bool USE_CUDA "USE_CUDA"
 
-cdef extern from "includes/RangeLib.h" namespace "ranges":
+cdef extern from "RangeLib.h" namespace "ranges":
     cdef cppclass OMap:
         OMap(int w, int h)
         OMap(string filename)
